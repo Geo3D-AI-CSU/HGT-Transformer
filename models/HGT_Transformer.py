@@ -1,3 +1,4 @@
+import math
 import os
 import warnings
 import numpy as np
@@ -19,11 +20,13 @@ LR = 1e-4
 EPOCHS = 100
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MODEL_SAVE_PATH = "trained_hgt_transformer.pt"
-RESULTS_DIR = "D:/GCN-Transformer/results"
+RESULTS_DIR = "D:/HGT-Transformer/results"
 HGT_LAYERS = 2
 HGT_HEADS = 4
 
 os.makedirs(RESULTS_DIR, exist_ok=True)
+
+
 
 def build_window_sample(multi_dataset, start_idx, seq_len=SEQ_LEN):
     if start_idx < 0 or start_idx + seq_len - 1 >= len(multi_dataset):
@@ -240,13 +243,13 @@ def train_epoch(model, optimizer, dataset, start_indices, device, target_scaler)
 
     t_mean, t_std = target_scaler if target_scaler is not None else (0.0, 1.0)
 
-    per_window = []  # 存放每个窗口的字典记录
+    per_window = []
     all_preds = []
     all_trues = []
     losses = []
 
-    # 使用 tqdm 来显示窗口进度，并在 postfix 中显示当前窗口指标
     pbar = tqdm(start_indices, desc="训练窗口进度", unit="窗口", leave=False)
+
     for start in pbar:
         try:
             data = build_window_sample(dataset, start, seq_len=SEQ_LEN)
@@ -256,67 +259,59 @@ def train_epoch(model, optimizer, dataset, start_indices, device, target_scaler)
 
         data = data.to(device)
 
-        print(f"\n[DEBUG] 时间片的节点特征：")
-        for nt, x in data.x_dict.items():
-            print(f"  节点类型 = {nt:10s} | 特征形状 = {tuple(x.shape)}")
-        print("----------------------------------------")
         # forward
         preds = model(data)
         if preds.numel() == 0:
             warnings.warn(f"模型输出为空 preds.numel()==0 at start {start}. 跳过样本。")
             continue
 
-        # 取窗口最后时刻预测（标准化域或模型输出域）
-        y_pred_torch = preds[-1].unsqueeze(0)  # shape (1,)
+        y_pred_torch = preds[-1].unsqueeze(0)
         y_pred_scalar = float(y_pred_torch.detach().cpu().item())
 
-        # 获取真实值（优先 CAMS）
         true_val_raw = None
         try:
             cams_ds = getattr(dataset, "cams", None)
-            if cams_ds is None:
-                if hasattr(dataset, "src_names") and hasattr(dataset, "sources"):
-                    for name, src in zip(dataset.src_names, dataset.sources):
-                        if name.upper().startswith("CAM"):
-                            cams_ds = src
-                            break
             if cams_ds is not None:
-                cams_idx = start + SEQ_LEN - 1
-                if 0 <= cams_idx < len(cams_ds):
-                    cams_last = cams_ds[cams_idx]
-                    if "time" in cams_last.node_types:
-                        t_feat = cams_last["time"].x
-                        true_val_tensor = t_feat[:, 0]
-                        if true_val_tensor.numel() > 0:
-                            true_val_raw = float(true_val_tensor.mean().item())
+                cams_day_index = start + SEQ_LEN - 1
+                if 0 <= cams_day_index < len(cams_ds):
+                    cams_day = cams_ds[cams_day_index]
+
+                    if "cams_grid" in cams_day.node_types:
+                        x = cams_day["cams_grid"].x
+                        if x.numel() > 0:
+                            # ★ CO₂ 真实值 = CAMS 网格点 CO₂ 均值
+                            true_val_raw = float(x.mean().item())
+
         except Exception as e:
-            warnings.warn(f"取 cams 真值时发生异常: {e}")
+            warnings.warn(f"提取 CAMS CO₂ 真值异常: {e}")
 
         if true_val_raw is None:
-            # 回退：使用窗口 data 中最后一个 time 节点
             try:
-                t_feat = data["time"].x[-1]
-                if t_feat.dim() == 1:
-                    true_val_raw = float(t_feat[0].detach().cpu().item())
-                else:
-                    true_val_raw = float(t_feat[:, 0].mean().detach().cpu().item())
-            except Exception as e:
-                warnings.warn(f"回退取真实值失败: {e}. 使用 0.0 作为兜底值")
-                true_val_raw = 0.0
+                if "cams_grid" in data.node_types:
+                    x = data["cams_grid"].x
+                    if x.numel() > 0:
+                        true_val_raw = float(x.mean().item())
+            except:
+                pass
 
-        # 标准化真实值以用于 loss 计算（若提供 scaler）
-        true_val_norm = (true_val_raw - t_mean) / t_std if (t_std != 0 and target_scaler is not None) else true_val_raw
+        if true_val_raw is None:
+            true_val_raw = 0.0
+            warnings.warn(f"真实值无法提取 at start={start}。")
+
+        if target_scaler is not None and t_std != 0:
+            true_val_norm = (true_val_raw - t_mean) / t_std
+        else:
+            true_val_norm = true_val_raw
 
         y_true_torch = torch.tensor([true_val_norm], device=device, dtype=torch.float32)
 
-        # 计算 loss 并更新
         loss = criterion(y_pred_torch, y_true_torch)
         optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         optimizer.step()
 
-        # 保存窗口级度量（标准化域）
+        # window metrics
         err = (y_pred_scalar - float(true_val_norm))
         mse_win = err * err
         rmse_win = float(np.sqrt(mse_win))
@@ -333,31 +328,27 @@ def train_epoch(model, optimizer, dataset, start_indices, device, target_scaler)
             "mae": mae_win,
             "true_norm": float(true_val_norm),
             "pred_norm": float(y_pred_scalar),
-            # 也可以保存原始（反归一化）值：
             "true_raw": float(true_val_raw),
-            "pred_raw": float(y_pred_scalar * t_std + t_mean) if (t_std != 0 and target_scaler is not None) else float(y_pred_scalar)
+            "pred_raw": float(y_pred_scalar * t_std + t_mean)
+                         if (target_scaler is not None and t_std != 0)
+                         else float(y_pred_scalar)
         })
 
-        # tqdm 实时显示当前窗口指标（保留 4 位小数）
         pbar.set_postfix({
             "Loss": f"{loss.item():.4f}",
             "RMSE": f"{rmse_win:.4f}",
             "MAE": f"{mae_win:.4f}"
         })
 
-    # 计算 epoch 级指标（标准化域）
+    # ---- epoch metrics ----
     if len(all_preds) == 0:
-        epoch_mse = float("nan")
-        epoch_rmse = float("nan")
-        epoch_mae = float("nan")
-        epoch_r2 = float("nan")
+        epoch_mse = epoch_rmse = epoch_mae = epoch_r2 = float("nan")
     else:
         epoch_mse = mean_squared_error(all_trues, all_preds)
         epoch_rmse = float(np.sqrt(epoch_mse))
-        epoch_mae = float(mean_absolute_error(all_trues, all_preds))
-        epoch_r2 = float(r2_score(all_trues, all_preds)) if len(all_preds) > 1 else float("nan")
+        epoch_mae = mean_absolute_error(all_trues, all_preds)
+        epoch_r2 = r2_score(all_trues, all_preds) if len(all_preds) > 1 else float("nan")
 
-    # print summary
     print(f"\n📊 本 Epoch 训练整体指标 (标准化域): MSE={epoch_mse:.6f}, RMSE={epoch_rmse:.6f}, MAE={epoch_mae:.6f}, R²={epoch_r2 if not np.isnan(epoch_r2) else 'NaN'}")
 
     return {
@@ -368,6 +359,7 @@ def train_epoch(model, optimizer, dataset, start_indices, device, target_scaler)
         "r2": float(epoch_r2) if not np.isnan(epoch_r2) else None,
         "per_window": per_window
     }
+
 
 
 def eval_model(model, dataset, start_indices, device, target_scaler=None):
@@ -401,8 +393,8 @@ def eval_model(model, dataset, start_indices, device, target_scaler=None):
             if true_val_raw is None:
                 # fallback to window time last
                 try:
-                    t_feat = data["time"].x[-1]
-                    true_val_raw = float(t_feat[0].cpu().item())
+                    if "cams_grid" in data.node_types and data["cams_grid"].x.numel() > 0:
+                        true_val_raw = float(data["cams_grid"].x.mean().cpu().item())
                 except Exception:
                     continue
 
@@ -453,9 +445,9 @@ def main():
     from graphs.data import MultiSourceDataset
 
     print("正在加载数据集...")
-    era = ERA5Dataset("D:/GCN-Transformer/data/ERA-5")
-    oco = OCO2Dataset("D:/GCN-Transformer/data/OCO-2")
-    cams = CAMSDataset("D:/GCN-Transformer/processed_data/CAMS-IO-interpolation.nc")
+    era = ERA5Dataset("D:/HGT-Transformer/data/ERA-5")
+    oco = OCO2Dataset("D:/HGT-Transformer/data/OCO-2")
+    cams = CAMSDataset("D:/HGT-Transformer/processed_data/CAMS-IO-interpolation.nc")
     multi = MultiSourceDataset(datas=[era, oco, cams])
     multi.cams = cams
 
