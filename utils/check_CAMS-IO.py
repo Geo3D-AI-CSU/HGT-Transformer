@@ -50,5 +50,5 @@ def check_cams_io_info(data_dir):
     ds.close()
 
 if __name__ == "__main__":
-    data_dir = r"D:\GCN-Transformer\data\CAMS-IO"
+    data_dir = r"D:\HGT-Transformer\data\CAMS-IO"
     check_cams_io_info(data_dir)
