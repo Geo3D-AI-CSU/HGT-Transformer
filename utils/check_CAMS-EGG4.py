@@ -4,7 +4,7 @@ import xarray as xr
 import numpy as np
 
 # === 配置 ===
-DATA_DIR = r"D:/GCN-Transformer/data/CAMS-EGG4"
+DATA_DIR = r"D:/HGT-Transformer/data/CAMS-EGG4"
 
 
 def check_cams_egg4(data_dir):
