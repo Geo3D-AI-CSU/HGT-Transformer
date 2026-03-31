@@ -397,17 +397,28 @@ def eval_model(model, dataset, start_indices, device, target_scaler=None):
             if preds.numel() == 0:
                 continue
             y_pred_norm = float(preds[-1].cpu().item())
-
-            # 真实值取自 cams grid.mean（raw）
             true_val_raw = None
-            try:
-                cams_last = getattr(dataset, "cams", None)
-                if cams_last is not None:
-                    cams_day = cams_last[start + SEQ_LEN - 1]
-                    if "cams_grid" in cams_day.node_types and cams_day["cams_grid"].x.numel() > 0:
-                        true_val_raw = float(cams_day["cams_grid"].x.mean().cpu().item())
-            except Exception:
-                pass
+        try:
+            oco_ds = getattr(dataset, "oco", None)
+            if oco_ds is not None:
+                idx_day = start + SEQ_LEN - 1
+                if 0 <= idx_day < len(oco_ds):
+                    oco_day = oco_ds[idx_day]
+
+                    lat = oco_day["lat"]
+                    lon = oco_day["lon"]
+                    xco2 = oco_day["xco2"]
+
+                    mask = (~np.isnan(lat)) & (~np.isnan(lon)) & (~np.isnan(xco2))
+                    lat, lon, xco2 = lat[mask], lon[mask], xco2[mask]
+
+                    if len(xco2) > 0:
+                        lat0, lon0 = np.mean(lat), np.mean(lon)
+                        dist = np.sqrt((lat - lat0)**2 + (lon - lon0)**2)
+                        w = 1.0 / (dist + 1e-6)
+                        true_val_raw = float(np.sum(xco2 * w) / np.sum(w))
+        except:
+            pass
 
 
             # 若标准化过，需要反归一化预测
