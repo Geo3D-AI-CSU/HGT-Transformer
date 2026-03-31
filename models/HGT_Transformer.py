@@ -409,13 +409,6 @@ def eval_model(model, dataset, start_indices, device, target_scaler=None):
             except Exception:
                 pass
 
-            if true_val_raw is None:
-                # fallback to window time last
-                try:
-                    if "cams_grid" in data.node_types and data["cams_grid"].x.numel() > 0:
-                        true_val_raw = float(data["cams_grid"].x.mean().cpu().item())
-                except Exception:
-                    continue
 
             # 若标准化过，需要反归一化预测
             if target_scaler is not None:
