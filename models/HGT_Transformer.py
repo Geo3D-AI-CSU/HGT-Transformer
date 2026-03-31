@@ -270,29 +270,48 @@ def train_epoch(model, optimizer, dataset, start_indices, device, target_scaler)
 
         true_val_raw = None
         try:
-            cams_ds = getattr(dataset, "cams", None)
-            if cams_ds is not None:
-                cams_day_index = start + SEQ_LEN - 1
-                if 0 <= cams_day_index < len(cams_ds):
-                    cams_day = cams_ds[cams_day_index]
+            oco_ds = getattr(dataset, "oco", None)
 
-                    if "cams_grid" in cams_day.node_types:
-                        x = cams_day["cams_grid"].x
-                        if x.numel() > 0:
-                            # ★ CO₂ 真实值 = CAMS 网格点 CO₂ 均值
-                            true_val_raw = float(x.mean().item())
+            if oco_ds is not None:
+                cams_day_index = start + SEQ_LEN - 1
+
+                if 0 <= cams_day_index < len(oco_ds):
+                    oco_day = oco_ds[cams_day_index]
+
+                    # OCO-2 fields
+                    lat = oco_day["lat"]
+                    lon = oco_day["lon"]
+                    xco2 = oco_day["xco2"]
+
+                    if len(xco2) > 0:
+
+                        # ====== 基础清洗 ======
+                        mask = (
+                            (~np.isnan(lat)) &
+                            (~np.isnan(lon)) &
+                            (~np.isnan(xco2))
+                        )
+
+                        lat = lat[mask]
+                        lon = lon[mask]
+                        xco2 = xco2[mask]
+
+                        if len(xco2) > 0:
+
+                            # ====== 空间加权均值======
+                            lat0 = float(np.mean(lat))
+                            lon0 = float(np.mean(lon))
+
+                            dist = np.sqrt(
+                                (lat - lat0) ** 2 +
+                                (lon - lon0) ** 2
+                            )
+
+                            weights = 1.0 / (dist + 1e-6)
+                            true_val_raw = float(np.sum(xco2 * weights) / np.sum(weights))
 
         except Exception as e:
-            warnings.warn(f"提取 CAMS CO₂ 真值异常: {e}")
-
-        if true_val_raw is None:
-            try:
-                if "cams_grid" in data.node_types:
-                    x = data["cams_grid"].x
-                    if x.numel() > 0:
-                        true_val_raw = float(x.mean().item())
-            except:
-                pass
+            warnings.warn(f"提取 OCO-2 CO₂ 真值异常: {e}")
 
         if true_val_raw is None:
             true_val_raw = 0.0
