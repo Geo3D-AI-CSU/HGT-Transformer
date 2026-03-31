@@ -243,10 +243,9 @@ def train_epoch(model, optimizer, dataset, start_indices, device, target_scaler)
 
     t_mean, t_std = target_scaler if target_scaler is not None else (0.0, 1.0)
 
-    per_window = []
+    losses = []
     all_preds = []
     all_trues = []
-    losses = []
 
     pbar = tqdm(start_indices, desc="训练窗口进度", unit="窗口", leave=False)
 
@@ -254,69 +253,58 @@ def train_epoch(model, optimizer, dataset, start_indices, device, target_scaler)
         try:
             data = build_window_sample(dataset, start, seq_len=SEQ_LEN)
         except Exception as e:
-            warnings.warn(f"build_window_sample failed for start {start}: {e}. 跳过该窗口。")
             continue
 
         data = data.to(device)
 
-        # forward
         preds = model(data)
         if preds.numel() == 0:
-            warnings.warn(f"模型输出为空 preds.numel()==0 at start {start}. 跳过样本。")
             continue
 
         y_pred_torch = preds[-1].unsqueeze(0)
         y_pred_scalar = float(y_pred_torch.detach().cpu().item())
 
+        # =========================
+        # OCO-2 label（Gaussian spatial weighted mean）
+        # =========================
         true_val_raw = None
         try:
             oco_ds = getattr(dataset, "oco", None)
+            idx_day = start + SEQ_LEN - 1
 
-            if oco_ds is not None:
-                cams_day_index = start + SEQ_LEN - 1
+            if oco_ds is not None and 0 <= idx_day < len(oco_ds):
+                oco_day = oco_ds[idx_day]
 
-                if 0 <= cams_day_index < len(oco_ds):
-                    oco_day = oco_ds[cams_day_index]
+                lat = oco_day["lat"]
+                lon = oco_day["lon"]
+                xco2 = oco_day["xco2"]
 
-                    # OCO-2 fields
-                    lat = oco_day["lat"]
-                    lon = oco_day["lon"]
-                    xco2 = oco_day["xco2"]
+                mask = (~np.isnan(lat)) & (~np.isnan(lon)) & (~np.isnan(xco2))
+                lat = lat[mask]
+                lon = lon[mask]
+                xco2 = xco2[mask]
 
-                    if len(xco2) > 0:
+                if len(xco2) > 0:
+                    lat0 = float(np.mean(lat))
+                    lon0 = float(np.mean(lon))
 
-                        # ====== 基础清洗 ======
-                        mask = (
-                            (~np.isnan(lat)) &
-                            (~np.isnan(lon)) &
-                            (~np.isnan(xco2))
-                        )
+                    sigma = 2.0
+                    dist = np.sqrt((lat - lat0) ** 2 + (lon - lon0) ** 2)
 
-                        lat = lat[mask]
-                        lon = lon[mask]
-                        xco2 = xco2[mask]
+                    weights = np.exp(-(dist ** 2) / (2 * sigma ** 2))
 
-                        if len(xco2) > 0:
+                    if np.sum(weights) < 1e-8:
+                        weights = np.ones_like(weights)
 
-                            # ====== 空间加权均值======
-                            lat0 = float(np.mean(lat))
-                            lon0 = float(np.mean(lon))
-
-                            dist = np.sqrt(
-                                (lat - lat0) ** 2 +
-                                (lon - lon0) ** 2
-                            )
-
-                            weights = 1.0 / (dist + 1e-6)
-                            true_val_raw = float(np.sum(xco2 * weights) / np.sum(weights))
+                    true_val_raw = float(np.sum(weights * xco2) / np.sum(weights))
 
         except Exception as e:
-            warnings.warn(f"提取 OCO-2 CO₂ 真值异常: {e}")
+            true_val_raw = 0.0
 
         if true_val_raw is None:
             true_val_raw = 0.0
-            warnings.warn(f"真实值无法提取 at start={start}。")
 
+        # normalize
         if target_scaler is not None and t_std != 0:
             true_val_norm = (true_val_raw - t_mean) / t_std
         else:
@@ -325,84 +313,63 @@ def train_epoch(model, optimizer, dataset, start_indices, device, target_scaler)
         y_true_torch = torch.tensor([true_val_norm], device=device, dtype=torch.float32)
 
         loss = criterion(y_pred_torch, y_true_torch)
+
         optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
         optimizer.step()
 
-        # window metrics
-        err = (y_pred_scalar - float(true_val_norm))
-        mse_win = err * err
-        rmse_win = float(np.sqrt(mse_win))
-        mae_win = float(abs(err))
+        err = y_pred_scalar - float(true_val_norm)
 
         losses.append(float(loss.item()))
         all_preds.append(y_pred_scalar)
         all_trues.append(float(true_val_norm))
 
-        per_window.append({
-            "start": int(start),
-            "loss": float(loss.item()),
-            "rmse": rmse_win,
-            "mae": mae_win,
-            "true_norm": float(true_val_norm),
-            "pred_norm": float(y_pred_scalar),
-            "true_raw": float(true_val_raw),
-            "pred_raw": float(y_pred_scalar * t_std + t_mean)
-                         if (target_scaler is not None and t_std != 0)
-                         else float(y_pred_scalar)
-        })
-
         pbar.set_postfix({
             "Loss": f"{loss.item():.4f}",
-            "RMSE": f"{rmse_win:.4f}",
-            "MAE": f"{mae_win:.4f}"
+            "RMSE": f"{np.sqrt(err**2):.4f}"
         })
 
-    # ---- epoch metrics ----
     if len(all_preds) == 0:
-        epoch_mse = epoch_rmse = epoch_mae = epoch_r2 = float("nan")
-    else:
-        epoch_mse = mean_squared_error(all_trues, all_preds)
-        epoch_rmse = float(np.sqrt(epoch_mse))
-        epoch_mae = mean_absolute_error(all_trues, all_preds)
-        epoch_r2 = r2_score(all_trues, all_preds) if len(all_preds) > 1 else float("nan")
-
-    print(f"\n📊 本 Epoch 训练整体指标 (标准化域): MSE={epoch_mse:.6f}, RMSE={epoch_rmse:.6f}, MAE={epoch_mae:.6f}, R²={epoch_r2 if not np.isnan(epoch_r2) else 'NaN'}")
+        return {"loss": float("nan")}
 
     return {
-        "loss": float(np.mean(losses)) if len(losses) > 0 else float("nan"),
-        "mse": float(epoch_mse),
-        "rmse": float(epoch_rmse),
-        "mae": float(epoch_mae),
-        "r2": float(epoch_r2) if not np.isnan(epoch_r2) else None,
-        "per_window": per_window
+        "loss": float(np.mean(losses)),
+        "mse": float(mean_squared_error(all_trues, all_preds)),
+        "rmse": float(np.sqrt(mean_squared_error(all_trues, all_preds))),
+        "mae": float(mean_absolute_error(all_trues, all_preds)),
     }
-
-
-
+    
 def eval_model(model, dataset, start_indices, device, target_scaler=None):
     model.eval()
+
     preds_all = []
     trues_all = []
 
+    t_mean, t_std = target_scaler if target_scaler is not None else (0.0, 1.0)
+
     with torch.no_grad():
         for start in tqdm(start_indices, desc="评估窗口进度", unit="窗口", leave=False):
+
             try:
                 data = build_window_sample(dataset, start, seq_len=SEQ_LEN)
             except:
                 continue
+
             data = data.to(device)
+
             preds = model(data)
             if preds.numel() == 0:
                 continue
+
             y_pred_norm = float(preds[-1].cpu().item())
+
             true_val_raw = None
-        try:
-            oco_ds = getattr(dataset, "oco", None)
-            if oco_ds is not None:
+            try:
+                oco_ds = getattr(dataset, "oco", None)
                 idx_day = start + SEQ_LEN - 1
-                if 0 <= idx_day < len(oco_ds):
+
+                if oco_ds is not None and 0 <= idx_day < len(oco_ds):
                     oco_day = oco_ds[idx_day]
 
                     lat = oco_day["lat"]
@@ -410,20 +377,29 @@ def eval_model(model, dataset, start_indices, device, target_scaler=None):
                     xco2 = oco_day["xco2"]
 
                     mask = (~np.isnan(lat)) & (~np.isnan(lon)) & (~np.isnan(xco2))
-                    lat, lon, xco2 = lat[mask], lon[mask], xco2[mask]
+                    lat = lat[mask]
+                    lon = lon[mask]
+                    xco2 = xco2[mask]
 
                     if len(xco2) > 0:
-                        lat0, lon0 = np.mean(lat), np.mean(lon)
-                        dist = np.sqrt((lat - lat0)**2 + (lon - lon0)**2)
-                        w = 1.0 / (dist + 1e-6)
-                        true_val_raw = float(np.sum(xco2 * w) / np.sum(w))
-        except:
-            pass
+                        lat0 = float(np.mean(lat))
+                        lon0 = float(np.mean(lon))
 
+                        sigma = 2.0
+                        dist = np.sqrt((lat - lat0) ** 2 + (lon - lon0) ** 2)
 
-            # 若标准化过，需要反归一化预测
-            if target_scaler is not None:
-                t_mean, t_std = target_scaler
+                        weights = np.exp(-(dist ** 2) / (2 * sigma ** 2))
+
+                        if np.sum(weights) < 1e-8:
+                            weights = np.ones_like(weights)
+
+                        true_val_raw = float(np.sum(weights * xco2) / np.sum(weights))
+
+            except:
+                true_val_raw = 0.0
+
+            # denormalize pred
+            if target_scaler is not None and t_std != 0:
                 y_pred = y_pred_norm * t_std + t_mean
             else:
                 y_pred = y_pred_norm
@@ -431,20 +407,17 @@ def eval_model(model, dataset, start_indices, device, target_scaler=None):
             preds_all.append(y_pred)
             trues_all.append(true_val_raw)
 
-    if len(preds_all) == 0:
-        return float("nan"), float("nan"), float("nan"), float("nan"), [], []
-
     preds_all = np.array(preds_all)
     trues_all = np.array(trues_all)
 
     mse = np.mean((preds_all - trues_all) ** 2)
     rmse = np.sqrt(mse)
     mae = np.mean(np.abs(preds_all - trues_all))
-    r2 = r2_score(trues_all, preds_all) if len(preds_all) > 1 else float("nan")
+    r2 = r2_score(trues_all, preds_all)
 
-    print(f"测试集（反归一化）: RMSE={rmse:.4f}, MAE={mae:.4f}, R²={r2:.4f}")
+    print(f"Test: RMSE={rmse:.4f}, MAE={mae:.4f}, R²={r2:.4f}")
+
     return mse, rmse, mae, r2, trues_all.tolist(), preds_all.tolist()
-
 
 def compute_target_stats(dataset, train_idx):
     vals = []
