@@ -302,7 +302,7 @@ def train_epoch(model, optimizer, dataset, start_indices, device, target_scaler)
             true_val_raw = 0.0
 
         if true_val_raw is None:
-            true_val_raw = 0.0
+            continue
 
         # normalize
         if target_scaler is not None and t_std != 0:
@@ -405,6 +405,8 @@ def eval_model(model, dataset, start_indices, device, target_scaler=None):
                 y_pred = y_pred_norm
 
             preds_all.append(y_pred)
+            if true_val_raw is None:
+                continue
             trues_all.append(true_val_raw)
 
     preds_all = np.array(preds_all)
