@@ -37,15 +37,15 @@ data/
 
 ## Running the Project
 
-### Step 1: Build Knowledge Graph
+### Step 1: Build CAMS-IO-interpolation.nc
 
-Process geological reports to construct the knowledge graph:
+Interpolate CAMS-IO data onto the standard grid of CAMS-EGG4:
 
 ```bash
-python scripts/build_kg.py --reports data/reports/ --output kg/geological_kg.json
+python graphs/interpolation.py 
 ```
 
-**Output**: `kg/geological_kg.json` - Structured knowledge graph with entities and relationships
+**Output**: `processed_data/CAMS-IO-interpolation.nc` 
 
 ### Step 2: Extract Map Metadata
 
