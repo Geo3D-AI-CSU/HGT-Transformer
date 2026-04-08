@@ -1,4 +1,4 @@
-# Geo-MAG: Knowledge Graph-Enhanced Multimodal Retrieval-Augmented Generation Framework for Geological Map Understanding
+# A Dual-Transformer Network for Spatiotemporal Modeling of Carbon Dioxide Column Concentration (XCO2) Based on Dynamic Heterogeneous Graphs
 
 ## Overview
 
