@@ -47,47 +47,16 @@ python graphs/interpolation.py
 
 **Output**: `processed_data/CAMS-IO-interpolation.nc` 
 
-### Step 2: Extract Map Metadata
-
-Use the vision-language model to extract metadata from geological maps:
+### Step 2: Spatiotemporal heterogeneous graph construction and HGT-Transformer training.
 
 ```bash
-python scripts/extract_metadata.py --maps data/maps/ --output metadata/map_metadata.json
+python models/HGT_Transformer.py 
 ```
 
-**Output**: `metadata/map_metadata.json` - Extracted metadata including legends, strata, and structures
-
-### Step 3: Retrieve Knowledge Subgraphs
-
-Retrieve relevant subgraphs from the knowledge graph based on map metadata:
-
-```bash
-python scripts/retrieve_kg.py --metadata metadata/map_metadata.json --kg kg/geological_kg.json --output subgraphs/relevant_subgraph.json
-```
-
-**Output**: `subgraphs/relevant_subgraph.json` - Relevant knowledge subgraphs
-
-### Step 4: Generate Interpretation
-
-Generate geological interpretation using the multimodal large model:
-
-```bash
-python scripts/interpret.py --metadata metadata/map_metadata.json --subgraph subgraphs/relevant_subgraph.json --output results/interpretation.txt
-```
-
-**Output**: `results/interpretation.txt` - Generated geological interpretation report
-
-## Quick Start
-
-Run the complete pipeline:
-
-```bash
-bash run_pipeline.sh --reports data/reports/ --maps data/maps/ --output results/
-```
+**Output**: `trained_hgt_transformer.pt` - model weights `results/train_curve.png` - training curve 
 
 ## Notes
 
-- Geological map data is not included in this repository due to copyright and sensitivity concerns
-- Public geological datasets can be used for testing
-- API keys must be obtained from respective service providers
+- Remote sensing dataset is not included in this repository
+- Public remote sensing datasets can be used for testing
 - GPU acceleration is recommended for large-scale processing
