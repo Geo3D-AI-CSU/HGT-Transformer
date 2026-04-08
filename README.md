@@ -2,7 +2,7 @@
 
 ## Overview
 
-Geo-MAG is a framework for geological map understanding that integrates knowledge graphs with multimodal large language models. The system processes geological reports to build knowledge graphs, extracts metadata from geological maps using vision-language models, and generates semantic interpretations using multimodal large models.
+Dual-Transformer is a deep learning framework for complex spatiotemporal modeling tasks, aiming to integrate the advantages of HGT and Transformer architectures to enable the learning and predictive modeling of dynamic heterogeneous graphs.
 
 ## Installation
 
@@ -12,60 +12,26 @@ Geo-MAG is a framework for geological map understanding that integrates knowledg
 - PyTorch 2.0+
 - CUDA 11.8+ (for GPU acceleration)
 
-### Dependencies
-
-Install the required packages using pip:
-
-```bash
-pip install -r requirements.txt
-```
-
-### API Keys Configuration
-
-Create a `.env` file in the project root directory with the following environment variables:
-
-```env
-# Vision-Language Model API (e.g., DashScope)
-VL_API_KEY=your_vision_language_model_api_key
-VL_API_BASE=https://api.openai.com/v1  # or OpenAI, or your provider's endpoint
-
-# Multimodal Large Language Model API
-MLLM_API_KEY=your_multimodal_llm_api_key
-MLLM_API_BASE=https://api.openai.com/v1  # or your provider's endpoint
-
-# Vector Database (if applicable)
-VECTOR_DB_API_KEY=your_vector_database_api_key
-VECTOR_DB_ENDPOINT=your_vector_database_endpoint
-
-# Optional: Logging and Monitoring
-LOG_LEVEL=INFO
-```
-
 ## Data Preparation
 
 ### Required Data
 
-1. **Geological Reports** (for knowledge graph construction)
-   - Format: PDF or TXT files
-   - Location: `data/reports/`
-   - Each report should contain geological descriptions, stratigraphy, lithology, and structural information
-
-2. **Geological Maps** (for interpretation)
-   - Format: PNG or JPG images
-   - Location: `data/maps/`
-   - Images should be high-resolution and include legends
+1. **Remote Sensing Data** (for build a graph structure)
+   - Format: NetCDF files
+   - Location: `data/`
+   - The dataset should include CAMS-EGG4, CAMS-IO, OCO-2, ERA-5 and other remote sensing data.
 
 ### Directory Structure
 
 ```
 data/
-├── reports/          # Geological report files
-│   ├── report_001.pdf
-│   ├── report_002.pdf
+├── CAMS-EGG4/          
+│   ├── cams_01.nc
+│   ├── cams_02.nc
 │   └── ...
-└── maps/             # Geological map images
-    ├── map_001.png
-    ├── map_002.jpg
+└── OCO-2/             
+    ├── oco2_01.nc
+    ├── oco2_02.nc
     └── ...
 ```
 
